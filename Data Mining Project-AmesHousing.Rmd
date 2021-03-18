@@ -1,0 +1,1231 @@
+---
+title: "Data Mining Project - Ames Housing"
+date: "3/18/2021"
+output: html_document
+---
+
+### Introduction: Our group will work with a local real estate agent in Ames, Iowa. The scope of our project analysis will focus on developing a sales price prediciton model for better price listing of their clients as well as giving advices on home improvement projects. 
+
+### Dataset: AmesHousing.csv (2006 to 2010) house characteristics and sales price)
+
+### Problems to be addressed
+### 1. Develop a sales price prediction model
+### 2. Identify home features that are most predicitve of sales price
+### 3. Sales Price prediction accuracy across neighborhoods
+### 4. Develop a revoation value calculator to suggest profitable home improvements
+
+### Preamble: Loading packages
+
+```{r}
+#install.packages('relaimpo')
+#install.packages('ie2misc')
+#install.packages('Metrics')
+#install.packages('vip').
+#install.packages('pdp')
+#install.packages('rpart.plot')
+library(ggcorrplot)
+library(GGally)
+library(ggplot2)
+library(ISLR)
+library(MASS)
+library(knitr)
+library(splines)
+library(gam)
+library(plyr)
+library(tidyverse)
+library(funModeling) 
+library(Hmisc)
+library(zoo)
+library(leaps)
+library(glmnet)
+library(caret)
+library(relaimpo)
+library(ie2misc)
+library(Metrics)
+library(dplyr)
+library(vip)      # for variable importance
+library(randomForest)
+library(pdp)
+library(rpart)
+library(rpart.plot)
+```
+
+
+## Section 1. Exploratory Data Analysis
+
+### **(a)** Import data
+
+```{r}
+data <- read.csv("AmesHousing.csv", header = TRUE)
+dim(data[duplicated(data), ])[1]
+```
+
+There are no duplicate rows.
+
+
+### **(b)** Data Cleaning and Variables transformation
+
+```{r}
+# Change variable type 
+data$MS.SubClass <- as.factor(data$MS.SubClass)
+data$Yr.Sold <- as.factor(data$Yr.Sold)
+data$Neighborhood <-as.factor(data$Neighborhood)
+
+# Re-level neighborhood according to sales price (from low to high)
+priceByNeighborhood <- data %>%
+  group_by(Neighborhood) %>%
+  summarise(medianPrice = median(SalePrice))
+
+priceByNeighborhood <- arrange(priceByNeighborhood, medianPrice)
+
+vec <- pull(priceByNeighborhood, Neighborhood)
+
+data <- data %>%
+  mutate(Neighborhood = factor(Neighborhood,
+                           levels = vec))
+
+
+# Below features with "NA" are not true missing values. We convert them to "None".
+data$Alley <- ifelse(is.na(data$Alley), 
+             'None', data$Alley)
+data$Bsmt.Cond <- ifelse(is.na(data$Bsmt.Cond), 
+             'None', data$Bsmt.Cond)
+data$Bsmt.Qual <- ifelse(is.na(data$Bsmt.Qual), 
+             'None', data$Bsmt.Cond)
+
+data$Bsmt.Exposure <- ifelse(is.na(data$Bsmt.Exposure), 
+             'None', data$Bsmt.Exposure)
+data$BsmtFin.Type.1 <- ifelse(is.na(data$BsmtFin.Type.1), 
+             'None', data$BsmtFin.Type.1)
+data$BsmtFin.Type.2 <- ifelse(is.na(data$BsmtFin.Type.2), 
+             'None', data$BsmtFin.Type.2)
+data$Fireplace.Qu <- ifelse(is.na(data$Fireplace.Qu), 
+             'None', data$Fireplace.Qu)
+data$Garage.Type <- ifelse(is.na(data$Garage.Type), 
+             'None', data$Garage.Type)
+data$Garage.Finish <- ifelse(is.na(data$Garage.Finish), 
+             'None', data$Garage.Finish)
+data$Garage.Qual <- ifelse(is.na(data$Garage.Qual), 
+             'None', data$Garage.Qual)
+data$Garage.Cond <- ifelse(is.na(data$Garage.Cond), 
+             'None', data$Garage.Cond)
+data$Misc.Feature <- ifelse(is.na(data$Misc.Feature), 
+             'None', data$Misc.Feature)
+data$Pool.QC <- ifelse(is.na(data$Pool.QC), 
+             'None', data$Pool.QC)
+data$Fence <- ifelse(is.na(data$Fence), 
+             'None', data$Fence)
+
+
+# 16.7% of the data in Lot.Frontage are missing. Imputation might contribute to significant variations. We decided to delete this column.
+data$Lot.Frontage <- NULL
+
+
+# Remove identifiers
+data$PID <- NULL
+data$ï..Order <- NULL
+
+# Impute median if Garage Year Blt is N.A
+data$Garage.Yr.Blt[is.na(data$Garage.Yr.Blt)] <- median(data$Garage.Yr.Blt, na.rm = TRUE)
+
+# Unusual value
+qplot(data$Garage.Yr.Blt, geom="histogram", xlab="Year of Garage Built", ylab="Frequency", binwidth = 1)
+
+# Removing erroneous data point(s)
+data <- subset(data, Garage.Yr.Blt <=2011)
+
+# Log transformation of SalePrice and Lot.area (right skewed)
+data$log_SalePrice <- log(data$SalePrice)
+data$log_Lot.Area <- log(data$Lot.Area)
+
+# Factoring
+data <- data %>% mutate_if(is.character,as.factor)
+
+
+# Re-Level the factors with clearly implied magnitude. 
+data$Exter.Qual<-ordered(data$Exter.Qual,c('Po','Fa','TA','Gd','Ex'))
+data$Exter.Cond<-ordered(data$Exter.Cond,c('Po','Fa','TA','Gd','Ex'))
+data$Bsmt.Qual<-ordered(data$Bsmt.Qual,c('Po','Fa','TA','Gd','Ex'))
+data$Kitchen.Qual<-ordered(data$Kitchen.Qual,c('Po','Fa','TA','Gd','Ex'))
+data$Garage.Qual<-ordered(data$Garage.Qual,c('None','Po','Fa','TA','Gd','Ex'))
+data$Garage.Cond<-ordered(data$Garage.Cond,c('None','Po','Fa','TA','Gd','Ex'))
+data$Garage.Type<-ordered(data$Garage.Type,c('None','Detchd','Carport','BuiltIn','Basment','Attchd','2Types'))
+data$Bsmt.Cond<-ordered(data$Bsmt.Cond,c('Po','Fa','TA','Gd','Ex'))
+data$Bsmt.Exposure<-ordered(data$Bsmt.Exposure,c('None','No','Mn','Av','Gd'))
+data$BsmtFin.Type.1<-ordered(data$BsmtFin.Type.1,c('None','Unf','LwQ','Rec','BLQ', 'ALQ', 'GLQ'))
+data$BsmtFin.Type.2<-ordered(data$BsmtFin.Type.2,c('None','Unf','LwQ','Rec','BLQ', 'ALQ', 'GLQ'))
+data$Fireplace.Qu<-ordered(data$Fireplace.Qu,c('None','Po','Fa','TA','Gd','Ex'))
+data$Heating.QC<-ordered(data$Heating.QC,c('Po','Fa','TA','Gd','Ex'))
+data$Functional<-ordered(data$Functional,c('Sal','Sev','Maj2','Maj1','Mod', 'Min2', 'Min1', 'Typ'))
+data$Fence<-ordered(data$Fence,c('None','NnWw','GdWo','MnPrv','GdPrv'))
+data$Pool.QC<-ordered(data$Pool.QC,c('None','Fa','TA','Gd','Ex'))
+
+# We also need to re-level some variables for easier interpretation.
+
+# re-level Exterior.1st by median sales price
+priceByExterior.1st <- data %>%
+  group_by(Exterior.1st) %>%
+  summarise(medianPrice = median(SalePrice))
+
+priceByExterior.1st <- arrange(priceByExterior.1st, medianPrice)
+
+vecExterior.1st <- pull(priceByExterior.1st, Exterior.1st)
+
+data <- data %>%
+  mutate(Exterior.1st = factor(Exterior.1st,
+                           levels = vecExterior.1st))
+
+
+# re-level Mas.Vnr.Type(set None as the baseline, other four according to sales price)
+data <- data %>%
+  mutate(Mas.Vnr.Type = factor(Mas.Vnr.Type,
+                           levels = c("None", "CBlock", "BrkCmn", "BrkFace", "Stone")))
+
+# re-level MS.Zoning according to sales price
+priceByMS.Zoning <- data %>%
+  group_by(MS.Zoning) %>%
+  summarise(medianPrice = median(SalePrice))
+
+priceByMS.Zoning <- arrange(priceByMS.Zoning, medianPrice)
+
+vecMS.Zoning <- pull(priceByMS.Zoning, MS.Zoning)
+
+data <- data %>%
+  mutate(MS.Zoning = factor(MS.Zoning,
+                           levels = vecMS.Zoning))
+
+# re-level Heating according to sales price (low to high: Gravity furnace, Hot water or steam heat other than gas, Gas hot water or steam heat, Gas forced warm air furnace)
+priceByHeating <- data %>%
+  group_by(Heating) %>%
+  summarise(medianPrice = median(SalePrice))
+
+priceByHeating <- arrange(priceByHeating, medianPrice)
+
+vecHeating <- pull(priceByHeating, Heating)
+
+data <- data %>%
+  mutate(Heating = factor(Heating,
+                           levels = vecHeating))
+
+# re-level Lot.Shape according to sales price (low to high: regular, slightly irregular, irregular, moderately irregular). Change to meaningful names. 
+priceByLot.Shape <- data %>%
+  group_by(Lot.Shape) %>%
+  summarise(medianPrice = median(SalePrice))
+
+priceByLot.Shape <- arrange(priceByLot.Shape, medianPrice)
+
+vecLot.Shape <- pull(priceByLot.Shape, Lot.Shape)
+
+data <- data %>%
+  mutate(Lot.Shape = factor(Lot.Shape,
+                           levels = vecLot.Shape))
+
+data <- data %>% 
+  mutate(Lot.Shape = recode_factor(Lot.Shape, `Reg` = "Reg", `IR1` = "Slight_IR", `IR3` = "IR", `IR2` = "Moderate_IR"))
+
+
+#Removing any remaining missing data
+data<-data[complete.cases(data), ]
+
+```
+
+
+
+### **(c)** Descriptive Statistics of the cleaning data
+
+```{r}
+dim(data)
+summary(data)
+```
+
+
+### **(d)** Sales price across time
+
+```{r}
+data %>%
+  group_by(Yr.Sold) %>%
+  summarize_at("SalePrice", median)
+
+qplot(x = Yr.Sold, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Year Sold", 
+      ylab = "Sales Price",
+      fill = I("lightblue"))
+```
+
+Sales price does not vary significantly across years in our data. Therefore, it is reasonable to use the 2010 data as our validation set. 
+
+
+### **(e)** Sales price across neighborhood
+
+```{r}
+data %>%
+  group_by(Neighborhood) %>%
+  summarize_at("SalePrice", median)
+
+
+qplot(x = Neighborhood, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Year Sold", 
+      ylab = "Neighborhood",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+
+```
+
+Some neighborhoods have statistically significant differences in sales price. For example, the Stone Brook neighborhood has a significantly larger median sales price than Meadow Village with over $200,000 differences. 
+
+We re-leveled the neighborhood factor variable according to their median sales price (from low to high). This will make our regression coefficients easier to interpret.
+
+
+### **(f)** Sales price by overall quality 
+
+``` {r}
+
+sample <- sample(dim(data)[1], round(dim(data)[1]/10))
+ggplot(data = data[sample,], aes(x = Overall.Qual, y = SalePrice)) +
+  geom_jitter(alpha = 0.5) + stat_smooth(method = lm) + xlab("Overall Quality") +
+  ylab("Sale Price")
+
+```
+
+Several models discussed below use the overall quality of the home to predict the sales price. As we would expect, the sales price tends to increase with the overall quality.
+
+
+### **(g)** Sales price by above ground living area
+
+``` {r}
+
+ggplot(data = data[sample,], aes(x = Gr.Liv.Area, y = SalePrice)) + geom_point() +
+  stat_smooth(method = lm) + xlab("Above Ground Living Area") + ylab("Sale Price")
+
+```
+
+Several models also include the above ground living area as a predictor. As we might expect, the sales price is increasing with the size of the home.
+
+### **(h)** Housing characteristics and QPLOTs
+
+```{r}
+#Sales Price vs Pool.QC
+qplot(x = Pool.QC, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Pool.QC", 
+      ylab = "SalePrice",
+      fill = I("lightpink") ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))  + ggtitle("Sales Price vs Pool.QC")
+```
+
+Findings: Houses with better quality pools tend to have higher sales prices. Houses with excellent quality pools have the highest median sales price while houses with no pools have the lowest median sales price. 
+
+
+```{r}
+#Sales Price vs Functional
+qplot(x = Functional, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Functional", 
+      ylab = "SalePrice",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ggtitle("Sales Price vs Functional")
+```
+
+Findings: Houses with better functionality tend to have higher sales prices. 
+
+```{r}
+#Sales Price vs Exterior.1st
+qplot(x = Exterior.1st, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Exterior.1st", 
+      ylab = "SalePrice",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ggtitle("Sales Price vs Exterior.1st")
+```
+
+Findings: Sales prices vary with different exterior covering on house. Houses with `Imitation Stucco`, ` PreCast`, and `Stone` exterior covering have the highest median sales prices. While houses with ` Asphalt Shingles`, ` Cinder Block`, and ` Asbestos Shingles` exterior covering have the lowest median sales prices.
+
+
+```{r}
+#Sales Price vs Misc.Feature
+qplot(x = Misc.Feature, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Misc.Feature", 
+      ylab = "SalePrice",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ggtitle("Sales Price vs Misc.Feature")
+```
+
+Findings: Houses with miscellaneous features like `elevator`, `2nd garage` or `shed` do not have higher median sales prices than houses without those features. But houses with `tennis court` have higher median sales price than those without it.
+
+
+```{r}
+#Sales Price vs Mas.Vnr.Type
+qplot(x = Mas.Vnr.Type, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Mas.Vnr.Type", 
+      ylab = "SalePrice",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ggtitle("Sales Price vs Mas.Vnr.Type")
+```
+
+Findings: Houses with `Cinder Block` masonry veneer type have lower median sales price than houses with no masonry veneer. Houses with `Brick Common` masonry veneer have similar median sales price with houses with no masonry veneer. While houses with `Brick Face` or `Stone` masonry veneer have higher median sales price than houses with no masonry veneer.
+
+```{r}
+#Sales Price vs Condition.1
+qplot(x = Condition.1, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Condition.1", 
+      ylab = "SalePrice",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ggtitle("Sales Price vs Condition.1")
+```
+
+Findings: Houses `adjacent to postive off-site feature` have the highest median sales price, while houses `adjacent to arterial street` have the lowest median sales price.
+
+```{r}
+#Sales Price vs MS.Zoning
+qplot(x = MS.Zoning, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "MS.Zoning", 
+      ylab = "SalePrice",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ggtitle("Sales Price vs MS.Zoning")
+```
+
+Findings: The rank of median sales price corresponding to different general zoning classification, from low to high, is `commercial`, `industrial`, `residential medium density`, `residential high density`, `residential low density`, and `floating Village Residential`.
+
+
+```{r}
+#Sales Price vs Heating
+qplot(x = Heating, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Heating", 
+      ylab = "SalePrice",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + ggtitle("Sales Price vs Heating")
+```
+
+Findings: The rank of median sales price corresponding to different type of heating, from low to high, is `gravity furnace`, `hot water or steam heat other than gas`, `gas hot water or steam heat`, and `gas forced warm air furnace`
+
+```{r}
+#Sales Price vs Lot.Shape
+qplot(x = Lot.Shape, y = SalePrice,
+      geom = "boxplot", data = data,
+      xlab = "Lot.Shape", 
+      ylab = "SalePrice",
+      fill = I("lightpink")) +
+  theme(axis.text.x = element_text(hjust=1)) + ggtitle("Sales Price vs Lot.Shape")
+```
+
+Findings: The rank of median sales price corresponding to different general shape of property, from low to high, is `regular`, `slightly irregular`, `irregular` and `moderately Irregular`. 
+
+
+
+### **(i)** Split the data into `train_data` and `validation_data` based on `Yr.Sold`
+
+```{r}
+validation_idx <- which(data$Yr.Sold == "2010")
+validation_data <- data[validation_idx, ]
+train_data <- data[-validation_idx, ]
+
+```
+
+
+
+### **(j)** Variables exploration and Correlation Analysis
+
+```{r, fig.height = 20, fig.width = 20}
+
+#correlation plots for numeric variables
+num_cols <- unlist(lapply(train_data, is.numeric))
+data_corr <- train_data[ , num_cols]
+corr <- round(cor(data_corr),2)
+
+ggcorrplot(corr, hc.order = TRUE, lab = TRUE, type="lower")
+# variables with >= 0.5 correlation with log_SalePrice will be included
+
+#Findings: It can be concluded that for numeric variables: "Overall.Qual", "Garage.Area", "Garage.Cars", "Total.Bsmt.SF",  "X1st.Flr.SF", "Garage.Yr.Blt" ,"Year.Built", "Year.Remod.Add", "TotRms.AbvGrd", "Gr.Liv.Area", "Full.Bath" have moderate to high correlations with sales price. 
+
+# Examine correlations of above variables
+ggpairs(train_data[, c("Overall.Qual", "Garage.Area", "Garage.Cars", "Total.Bsmt.SF", "X1st.Flr.SF",  "Garage.Yr.Blt" ,"Year.Built", "Year.Remod.Add", "TotRms.AbvGrd", "Gr.Liv.Area", "Full.Bath")], 
+          title = "Correlation Plot of Ames Housing Features")
+
+```
+
+Findings: From the ggpairs plot, it can be shown that `Garage.cars` and `Garage.Area`, `Year.Built` and `Garage.Yr.Blt`, `Gr.Liv.Area` and `TotRms.AbvGrd`, `Total.Bsmt.SF` and `X1st.Flr.SF` are highly correlated (both ~ 0.8 corr). We will remove the highly correlated variables to avoid multi-colinearity of our generalized additive model.  
+
+
+
+## Section 2. Methodology 
+
+#### Overview: Our project goal is to build a model that can predict the housing sales prices as accurately as possible. We then make use of the selected model to answer different questions like what are the most predictive home features of sales price, predicition accuracy across neighborhoods and renovation decision.  
+
+#### Our group will have 6 regression methods including `Lasso Lambda-minimized Model`, `Generalized Additive Model`, `Forward Stepwise Model`, `Backward Stepwise Model`,`Pruned Decision Tree Model`, and `Random Forests Model`. We will in general make use of cross validation method to select our best training model (2006-2009 housing data) out of the 6 methods. After that, we will test the 6 models in testing data (2010 housing data) by different performance metrics. 
+
+#### We will start from our Generalized Additive method first.
+
+
+### **(a)** Generalized Additive method - We removed `Garage.Car`, `Garage.Yr.Blt`, `Gr.Liv.Area`, and `X1st.Flr.SF` from the model to avoid multicolinearity problem based on the ggpairs plot analysis. Remaining variables include `Overall.Qual`, `Garage.Area`,  `Total.Bsmt.SF`, `Year.Built`, `Year.Remod.Add`, `TotRms.AbvGrd`, and `Full.Bath`.
+
+```{r}
+# we use smoothing spline and adopt CV method to pick the optimal df for GAM modeling. 
+sp.overall<-smooth.spline(train_data$Overall.Qual,train_data$SalePrice,cv = TRUE)
+sp.overall
+# selected df = 10
+
+sp.garArea <-smooth.spline(train_data$Garage.Area,train_data$SalePrice,cv = TRUE)
+sp.garArea
+# selected df = 10.18032
+
+sp.Bsmt <-smooth.spline(train_data$Total.Bsmt.SF,train_data$SalePrice,cv = TRUE)
+sp.Bsmt
+# selected df = 12.6804
+
+sp.yearBuilt <-smooth.spline(train_data$Year.Built,train_data$SalePrice,cv = TRUE)
+sp.yearBuilt 
+# selected df = 16.79658
+
+sp.yearRemod <-smooth.spline(train_data$Year.Remod.Add,train_data$SalePrice,cv = TRUE)
+sp.yearRemod
+# selected df = 27.87975
+ 
+
+sp.RmsAbv <-smooth.spline(train_data$TotRms.AbvGrd,train_data$SalePrice,cv = TRUE)
+sp.RmsAbv
+# selected df = 12.99991
+
+sp.bath <-smooth.spline(train_data$Full.Bath,train_data$SalePrice,cv = TRUE)
+sp.bath$df
+# selected df = 2
+
+# Modeling
+gam.fit.housing <- gam(log_SalePrice ~ s(Overall.Qual, 10) +s(Garage.Area, 10.18032) +s(Total.Bsmt.SF, 12.6804) +s(Year.Built, 16.79658)+s(Year.Remod.Add, 27.87975 )+s(TotRms.AbvGrd, 12.99991)+s(Full.Bath, 2),data = train_data)
+
+par(mfrow = c(1,4))
+
+plot(gam.fit.housing, se = TRUE, col = 'darkgreen', lwd = 2)
+```
+
+Findings: Above plots show that all smoothing spline methods appear to capture nicely in the data pattern of the training data. 
+
+
+
+### **(b)** Forward Stpwise and Backward Stepwise Models (BIC as criterion for model selection)
+
+```{r}
+# Forward stepwise selection
+regfit.fwd = regsubsets(log_SalePrice ~ . -SalePrice -Lot.Area, data=train_data, nvmax=NULL,method="forward")
+
+# Below is to plot a BIC graph to indicate how many variables the model has selected.
+fwd.summary <- summary(regfit.fwd)
+
+num_variables<-seq(1,length(fwd.summary$bic))
+
+fwd_BIC<-ggplot(data = data.frame(fwd.summary$bic),
+                 aes(x=num_variables,y=fwd.summary$bic))+
+  geom_line()+
+  geom_point(x=which.min(fwd.summary$bic),
+             y=min(fwd.summary$bic),aes(color="red"),
+             show.legend = FALSE)+
+  xlab("# Variables")+
+  ylab("BIC")+ 
+  theme_bw() + ggtitle("BIC Plot for Forward Stepwise Model")
+
+fwd_BIC
+
+
+# Backward stepwise selection
+regfit.bwd = regsubsets(log_SalePrice ~ . -SalePrice -Lot.Area, data=train_data, nvmax=NULL ,method="backward")
+
+# Below is to plot a BIC graph to indicate how many variables the model has selected.
+bwd.summary <- summary(regfit.bwd)
+num_variables<-seq(1,length(bwd.summary$bic))
+
+bwd_BIC<-ggplot(data = data.frame(bwd.summary$bic),
+                 aes(x=num_variables,y=bwd.summary$bic))+
+  geom_line()+
+  geom_point(x=which.min(bwd.summary$bic),
+             y=min(bwd.summary$bic),aes(color="red"),
+             show.legend = FALSE)+
+  xlab("# Variables")+
+  ylab("BIC")+ 
+  theme_bw() + ggtitle("BIC Plot for Backward Stepwise Model")
+
+bwd_BIC
+
+
+```
+
+Findings: The two methods select various numbers of variables. Forward Stepwise selected 80 home features while Backward Stepwise selected 64 home features. We will examine their performances on the testing data in the evaluation section. 
+
+
+### **(c)** Lasso Lambda-minimized Model
+
+#### In order to minimize training error, we use Use the minimum CV error to pick the lambda value.
+
+```{r}
+x <- model.matrix(SalePrice ~ . -log_SalePrice -Lot.Area,train_data)[,-1]
+y <- train_data$log_SalePrice
+
+#Lasso regression - setting a seed to keep the results consistent
+set.seed(1)
+
+cv.out=cv.glmnet(x,y,alpha=1)  
+
+#lambda to minimize CV error 
+cv.out$lambda.min
+
+#Use the result from Cross validation to pick the minimized error of lambda value and model it again
+cv.min.out <- glmnet(x,y,alpha=1,lambda=cv.out$lambda.min)
+lasso.coef.min=predict(cv.min.out,type="coefficients",s=cv.out$lambda.min)
+
+#number of features that coefficents are not equal to zero
+nrow(predict(cv.min.out, s = cv.out$lambda.min, type = "nonzero"))
+
+```
+
+Findings: Lasso model selected 91 home features whose coefficents are not equal to zero.
+
+
+### **(c)** Regression Trees
+
+#### Pruned Regression Tree
+
+```{r}
+
+set.seed(1)
+
+# Grow a tree with complexity parameter 0.002 and a min split of 100 obs
+reg_tree <- rpart(formula = log_SalePrice ~ . -SalePrice -Lot.Area,
+                       data = train_data, 
+                       method = "anova",
+                       control = rpart.control(minsplit=100, cp=0.005))
+
+# Display CP table
+plotcp(reg_tree)
+reg_tree$cptable
+
+# Use th 1-SE rule to prune the tree
+best_error <- 
+  reg_tree$cptable[which.min(reg_tree$cptable[, "xerror"]), "xerror"]
+best_sd <- 
+  reg_tree$cptable[which.min(reg_tree$cptable[, "xerror"]), "xstd"]
+error_1se <- best_error + best_sd
+error_1se
+cp_1se <- 
+  reg_tree$cptable[which.max(reg_tree$cptable[, "xerror"] <= error_1se), "CP"]
+cp_1se
+
+# Display the pruned tree
+pruned_tree <- prune(reg_tree, cp = cp_1se)
+rpart.plot(pruned_tree)
+
+```
+
+Findings: The pruned regression tree above predicts the sales price using the overall quality of the home, the neighborhood, the above ground living area in square feet, and the total square feet of the basement area. As expected, higher quality homes with more square feet of living area tend to sell for higher prices. 
+
+We selected this model by first growing a deeper tree with a lower relative error, and then pruning to a less complex tree with a relative error within one standard error of our minimum. The CP plot shows that the relative error is greater than 0.2. In the next section, we attempt to create a more accurate model using random forests. 
+
+#### Random Forests
+
+```{r}
+
+set.seed(1)
+
+# Fit a random forest model
+rf <- randomForest(log_SalePrice ~ . -SalePrice -Lot.Area, 
+                   data = train_data, 
+                   importance = TRUE, 
+                   na.action = na.roughfix)
+
+# Display the random forest model and variable importance plot
+rf
+plot(rf, main = "Mean Squared Error")
+varImpPlot(rf, cex = 0.6, main = "Variable Importance")
+
+```
+
+Discussion: From the mean squared error plot above, we can tell that the Random Forests model is more accurately predicing sales price for the training data than the pruned decision tree. We will evaluate both models on the validation data in the next section. The most important variables in the random forests model, defined as the variables whose splits contribute the largest increase in node purity, still appear to be the overall quality of the home, the neighborhood, and the square feet of living area. 
+
+
+### **(d)** Final Model Evaluation for above regression models: Lasso Lambda-minimized Model, Generalized Additive Model, Forward Stepwise Model, Backward Stepwise Model, Pruned Decision Tree Model, Random Forests Model
+
+#### Testing metrics: Coefficient of Determination, RMSE, MAE, RSE, RAE
+
+```{r}
+# Forward and Backward Stepwise testing performance
+test.mat = model.matrix(log_SalePrice ~.-SalePrice,validation_data)
+
+# To provide a clear and fair comparison to our previously obtained model, we need to re-transform our predicted values from log_SalesPrice to SalesPrice.
+
+# Testing our best minimized BIC model for Forward Stepwise
+
+# RMSE fwd
+coefi.fwd= coef(regfit.fwd, id = which.min(fwd.summary$bic))
+fwd.pred=test.mat[,names(coefi.fwd)]%*%coefi.fwd
+mse.fwd=mean((exp(validation_data$log_SalePrice)-exp(fwd.pred))^2) 
+rmse.fwd <- sqrt(mse.fwd)
+
+# RSQ FWD
+rss.fwd <- sum((fwd.pred  - validation_data$log_SalePrice) ^ 2)  ## residual sum of squares
+tss.fwd <- sum((validation_data$log_SalePrice - mean(validation_data$log_SalePrice)) ^ 2)  ## total sum of squares
+rsq.fwd <- 1 - rss.fwd/tss.fwd
+
+# MAE fWD
+mae.fwd <- mae(exp(validation_data$log_SalePrice),exp(fwd.pred))
+
+# RAE fwd
+rae.fwd <- rae(exp(validation_data$log_SalePrice),exp(fwd.pred))
+
+# RSE fwd
+rse.fwd <- rse(exp(validation_data$log_SalePrice),exp(fwd.pred))
+ 
+# Testing our best minimized BIC model for Backward Stepwise
+
+coefi.bwd= coef(regfit.bwd, id = which.min(bwd.summary$bic))
+bwd.pred=test.mat[,names(coefi.bwd)]%*%coefi.bwd
+mse.bwd=mean((exp(validation_data$log_SalePrice)-exp(bwd.pred))^2) 
+rmse.bwd <- sqrt(mse.bwd)
+
+rss.bwd <- sum((bwd.pred  - validation_data$log_SalePrice) ^ 2)  ## residual sum of squares
+tss.bwd <- sum((validation_data$log_SalePrice - mean(validation_data$log_SalePrice)) ^ 2)  ## total sum of squares
+rsq.bwd <- 1 - rss.bwd/tss.bwd
+
+# MAE bwd
+mae.bwd <- mae(exp(validation_data$log_SalePrice),exp(bwd.pred))
+ 
+# RAE bwd
+rae.bwd <- rae(exp(validation_data$log_SalePrice),exp(bwd.pred))
+
+# RSE bwd
+rse.bwd <- rse(exp(validation_data$log_SalePrice),exp(bwd.pred))
+
+
+# GAM testing performance
+# RMSE GAM
+gam.pred <- predict(gam.fit.housing,validation_data)
+mse_gam<- mean( (exp(validation_data$log_SalePrice) - exp(gam.pred)) ^ 2)
+rmse.gam <- sqrt(mse_gam)
+
+# R^2 GAM
+rss.gam <- sum((gam.pred  - validation_data$log_SalePrice) ^ 2)  ## residual sum of squares
+tss.gam <- sum((validation_data$log_SalePrice - mean(validation_data$log_SalePrice)) ^ 2)  ## total sum of squares
+rsq.gam <- 1 - rss.gam/tss.gam
+
+# MAE GAM
+mae.GAM <- mae(exp(validation_data$log_SalePrice),exp(gam.pred))
+
+# RAE GAM
+rae.GAM <- rae(exp(validation_data$log_SalePrice),exp(gam.pred))
+
+# RSE GAM
+rse.GAM <- rse(exp(validation_data$log_SalePrice),exp(gam.pred))
+
+
+# Lasso testing performance
+test_x <- model.matrix(SalePrice ~.-log_SalePrice -Lot.Area,validation_data)[,-1]
+test_y <- validation_data$log_SalePrice
+
+# RMSE Lasso
+lasso.pred.min <-predict(cv.min.out, test_x)
+mse_lasso_min <- mean(( exp(lasso.pred.min) - exp(test_y))^2)
+rmse.lasso <- sqrt(mse_lasso_min)
+
+# R^2 Lasso
+rss.lasso <- sum((lasso.pred.min  - test_y) ^ 2)  ## residual sum of squares
+tss.lasso <- sum((test_y - mean(test_y)) ^ 2)  ## total sum of squares
+rsq.lasso <- 1 - rss.lasso/tss.lasso
+
+# MAE Lasso
+mae.lasso <- mae(exp(validation_data$log_SalePrice),exp(lasso.pred.min))
+
+# RSE Lasso
+rse.lasso <- rse(exp(validation_data$log_SalePrice),exp(lasso.pred.min))
+
+# RAE Lasso
+rae.lasso <- rae(exp(validation_data$log_SalePrice),exp(lasso.pred.min))
+
+
+# RMSE - pruned tree
+pred_tree <- predict(reg_tree, newdata = validation_data)
+rmse.tree <- RMSE(pred = exp(pred_tree), obs = exp(validation_data$log_SalePrice))
+
+# R-squared - pruned tree
+rss.tree <- sum((pred_tree  - validation_data$log_SalePrice) ^ 2) 
+rsq.tree <- 1 - rss.tree/tss.fwd # using tss that james calculated earlier
+
+# MAE - pruned tree
+mae.tree <- mae(exp(validation_data$log_SalePrice), exp(pred_tree))
+
+# RAE - pruned tree
+rae.tree <- rae(exp(validation_data$log_SalePrice),exp(pred_tree))
+
+# RSE - pruned tree
+rse.tree <- rse(exp(validation_data$log_SalePrice),exp(pred_tree))
+
+# RMSE - random forests
+pred_rf <- predict(rf, newdata = validation_data)
+rmse.rf <- RMSE(pred = exp(pred_rf), obs = exp(validation_data$log_SalePrice))
+
+# R-squared - random forests
+rss.rf <- sum((pred_rf  - validation_data$log_SalePrice) ^ 2) 
+rsq.rf <- 1 - rss.rf/tss.fwd # using tss that james calculated earlier
+
+# MAE - random forests
+mae.rf <- mae(exp(validation_data$log_SalePrice), exp(pred_rf))
+
+# RAE - random forests
+rae.rf <- rae(exp(validation_data$log_SalePrice),exp(pred_rf))
+
+# RSE - random forests
+rse.rf <- rse(exp(validation_data$log_SalePrice),exp(pred_rf))
+
+
+#Combining all results into a data frame for better representation.
+
+model.name = c("Lasso Lambda-minimized Model", "Generalized Additive Model", "Forward Stepwise Model", "Backward Stepwise Model","Pruned Decision Tree Model", "Random Forests Model")
+rmse.error = c(rmse.lasso, rmse.gam, rmse.fwd, rmse.bwd, rmse.tree, rmse.rf)
+mae.error = c(mae.lasso, mae.GAM, mae.fwd, mae.bwd, mae.tree, mae.rf)
+rsq = c(rsq.lasso, rsq.gam, rsq.fwd, rsq.bwd, rsq.tree, rsq.rf)
+rse.error = c(rse.lasso, rse.GAM, rse.fwd, rse.bwd, rse.tree, rse.rf)
+rae.error = c(rae.lasso, rae.GAM, rae.fwd, rae.bwd, rae.tree, rae.rf)
+
+model.df <- data.frame(model.name,rmse.error,mae.error,rsq,rse.error,rae.error ) 
+  names(model.df)[1] <- "Model Methods"
+  names(model.df)[2] <- "Root Mean Square Error"
+  names(model.df)[3] <- "Mean Abosulte Error"
+  names(model.df)[4] <- "Coefficient of Determination"
+  names(model.df)[5] <- "Relative Square Error"
+  names(model.df)[6] <- "Relative Absolute Error"
+  
+model.df
+
+
+```
+
+Findings and Conclusions: It can be concluded that the lasso lambda-minimized model is the best performing prediction model among others. It has the lowest testing prediction errors and the best R^2 across all 5 performance measures. 
+
+
+
+## Section 3: Key Findings & Main takeaways 
+
+#### In this selection, we will use our best model - Lasso Lambda-minimized Model to answer problems 2 to 4.
+
+
+### **(a)** What home features are most predictive of sales price? How are those features related to price?
+
+```{r}
+# From the best regression model - Lasso-min model, we have 91 home features that are non-zero. 
+nrow(predict(cv.min.out, s = cv.out$lambda.min, type = "nonzero"))
+
+# We will pick the first 20 features which are the most predictive of sales price based on variable importance plots.
+vip.lasso <-vip(cv.min.out, num_features = 20, geom = "point")
+vip.lasso
+vip.lasso[1]
+
+```
+
+Findings and key takeaways: We can tell from the variable importance plots that `Neighborhood`, `Pool Quality`, `Exterior covering on house`, `miscellaneous feature` like second garage, `proximity to various conditions`, `general zoning classification of the sale`, `home functionality`, `log of Lot size in square feet`, `sales condition`, `overall quality of the house`, `general shape of property`, and `kitchen quality` are the most predictive features of sales price. 
+
+The coefficients summarized in the above table indicate how each variable impacts the sales price. When everything else is held constant and the variable changes by one unit, the coefficient indicates how much percentage would the sales price increases. Positive coefficients indicate a positive correlation with the sales price, and negative coefficients indicate a negative correlation with the sales price.
+
+For example, the coefficient for `Overall.Qual` is 0.064. This means that holding anything else constant, one unit increase in the overall quality of the house is associated with a 6.61% increase in sales price on average. 
+
+Mathematics calculation is as follows for `Overall.Qual`: ln(x1) = 0.064, x1 = 1.06609. ln(x2) = (0.064*2), x2 = 1.136553. Percentage increase of x2 ~ 6.609%
+
+For factor variables like `Neighborhood`, `Mas.Vnr.Type`, `Misc.Feature` and `Exterior.1st`, the coefficients represent the average sales price difference between a specific level with the baseline level. For example, the neighborhood `GrnHill` has a coefficient of 0.345. This means that the neighborhood `GrnHill` has a 41.2% higher sales price than the baseline neighborhood `MeadowV` on average When everything else is held constant.
+
+The Exterior.1st `PreCast` has a coefficient of 0.259. This means that Exterior.1st `PreCast`  has a 29.6% higher sales price than the baseline Exterior.1st `AsphShn` on average When everything else is held constant.
+
+The Mas.Vnr.Type `CBlock` has a coefficient of - 0.22466. This means that Mas.Vnr.Type `CBlock` has a 20.81% lower sales price than the baseline Mas.Vnr.Type
+`None` on average When everything else is held constant.
+ 
+The Misc.Feature `Gar2` has a coefficient of 0.22028. This means that Misc.Feature `Gar2` has a 24.64% higher sales price than the baseline Mas.Vnr.Type
+`Elev` on average When everything else is held constant.
+ 
+
+
+### **(b)** Model evaulation on predicted sales price across different neighbourhoods
+
+#### We will split the testing data based on `neighborhood` and examine each of its Root Mean Square Error (RMSE)
+
+```{r}
+# Split the testing data by neighborhood
+testing.neighborhood <- split(validation_data, validation_data$Neighborhood)
+
+neighrborhood.error = c()
+
+# Add each neighborhood MSE to a vector
+for (i in 1:length(testing.neighborhood)) {
+  test_x <- model.matrix(SalePrice ~.-log_SalePrice -Lot.Area,testing.neighborhood[[i]])[,-1]
+  test_y <- testing.neighborhood[[i]]$log_SalePrice
+
+# MSE Lasso for each neighborhood in testing data
+lasso.pred.min <-predict(cv.min.out, test_x)
+mse_lasso_min <- mean((exp(lasso.pred.min) - exp(test_y))^2)
+neighrborhood.error <- append(neighrborhood.error, sqrt(mse_lasso_min)) #RMSE
+}
+
+# Add the names to a vector
+neighborhood.name = c()
+for (i in 1:length(testing.neighborhood)) {
+
+neighborhood.name = c(neighborhood.name, names(testing.neighborhood)[i])
+
+}
+
+neighborhood.df <- data.frame(neighborhood.name,neighrborhood.error) 
+
+# Sorting the prediction error on testing dataset
+names(neighborhood.df)[2] <- "Root Mean Square Error"
+neighborhood.df[with(neighborhood.df, order(-neighrborhood.error)),]
+
+```
+
+Discussion: The prediction errors vary dramatically across neighborhoods. On average, our predicted sales prices for the `Northridge` neighborhood are around $53,000 off from the actual sales price. While for the `BrDale` neighborhood, that difference is only around $8,000.
+
+For those neighborhoods with RMSE greater than the mean RMSE ($22,428.84), we assign them to be `high prediction error group`. The rest is `low prediction error group`:
+
+Neighborhoods with high prediction errors: `Northridge Heights`, `Stone Brook`, `Clear Creek`, `Northridge`, `Timberland`, `Crawford`, `Edwards`, `Iowa DOT` and `Rail Road`.
+
+Neighborhoods with low prediction errors: `Gilbert`, `Northwest Ames`, `Sawyer West`, `Sawyer`, `Old Town`, `Somerset`, `College Creek`, `Greens`, `Northwest Ames`, `Brookside`,  `Mitchell`, `Bluestem`, `South & West of Iowa State University`, `Meadow Village`, `Northpark Villa`, `Briardale`, `Bloomington Heights`.
+
+There are no testing data in `GrnHill`, `Landmrk`, `Veenker` neighborhoods. Hence, we cannot calculate their testing errors and rank them. 
+
+
+Exploration of above results: We wondered whether the differences in RMSE by neighborhood was related to the number of observations for each neighborhood. To test this, we plot the RMSE by the number of observations:
+
+``` {r}
+
+# Calculate obs by neighborhood (for both train and test data)
+obs_by_neighborhood <- data %>%
+  group_by(Neighborhood) %>%
+  summarise(obs = n())
+
+# Get neighborhood names and make dataframe similar to one used above
+neighborhood.name <- levels(obs_by_neighborhood$Neighborhood)
+obs_by_neighborhood_df <- data.frame(neighborhood.name, obs_by_neighborhood$obs)
+
+# Sort both dataframes alphabetically
+neighborhood.df <- arrange(neighborhood.df, neighborhood.name)
+obs_by_neighborhood_df <- arrange(obs_by_neighborhood_df, neighborhood.name)
+
+# Join observation data to RMSE data
+neighborhood.df$obs <- obs_by_neighborhood_df$obs
+names(neighborhood.df)[2] <- "rmse"
+
+# Plot RMSE by number of observations
+ggplot(data = neighborhood.df, aes(x = obs, y = rmse, na.rm = TRUE)) + 
+  geom_point() + xlab("Number of observations") + 
+  ylab("RMSE") + ggtitle("Neighborhood RMSE by Number of Observations")
+
+```
+
+On observing the graph, we do not see evidence that the neighborhoods with fewer observations have higher RMSEs. 
+
+
+### **(b)** Renovation Value calculator that predicts the expected bump in sales price if adding bathrooms, remodeling kitchens, finishing basements, and/or putting on new roofs
+
+#### Approach: We will take out all the selected variables from the Lasso model and put them into a linear model for easier analysis. 
+
+```{r}
+# Create a model matrix from train_data 
+x <- as.matrix(train_data[,1:81])
+
+# Create the variables selected from our LASSO model
+x_vars <- as.matrix(coef(cv.min.out))
+
+# Keeping variables where the coefficient of variables not equal to 0
+keep_xvars <- rownames(x_vars)[x_vars!=0]
+
+# Removing intercept
+keep_xvars <- keep_xvars[!keep_xvars == "(Intercept)"]
+
+# Below are the keep_xvars variables from our best model - Lasso model. We use the variables to build a linear model.
+lasso.lm <- lm(log_SalePrice ~ MS.SubClass + MS.Zoning + Lot.Shape+Land.Contour + Utilities + Lot.Config + Land.Slope + Neighborhood + Condition.1 + Condition.2 + Bldg.Type + Overall.Qual + Year.Built + Year.Remod.Add + Roof.Style + Exterior.1st + Exterior.2nd + Mas.Vnr.Type + Exter.Qual+Exter.Cond + Foundation + Bsmt.Qual + Bsmt.Cond + Bsmt.Exposure + BsmtFin.Type.1 + BsmtFin.SF.1 + BsmtFin.SF.2 + Bsmt.Unf.SF + Total.Bsmt.SF + Heating + Central.Air +  X1st.Flr.SF + Low.Qual.Fin.SF + Gr.Liv.Area + Bsmt.Full.Bath + Full.Bath + Half.Bath + Kitchen.AbvGr + Kitchen.Qual + TotRms.AbvGrd + Functional + Fireplaces + Fireplace.Qu + Garage.Type + Garage.Finish + Garage.Cars + Garage.Area + Garage.Qual + Garage.Cond+ Paved.Drive + Wood.Deck.SF + Open.Porch.SF + Enclosed.Porch + Screen.Porch + Pool.QC + Fence + Misc.Feature + Misc.Val + Sale.Type + Sale.Condition + log_Lot.Area + Roof.Matl, 
+data = train_data)
+
+```
+
+
+#### Renovation Value calculator (function and implementation details)
+
+```{r}
+# Input: 
+
+#| Argument    | Description                                          | 
+#|-------------|------------------------------------------------------|
+#| `houseInfo` |Current housing parameters to be provided in a vector |
+#| `bathroom`  |length-4 vector of full/half bathroom improvement     | 
+#|  `kitchen`  |length-2 vector of kitchen romeling                   |
+#|  `basement` |length-2 vector of finishing basement                 |
+#|  `roof`     |length-1 vector of roof modeling                      |
+
+#variables consideration for bathroom improvement -> Bsmt.Full.Bath, Bsmt.Half.Bath, Full.Bath, Half.Bath 
+#variables consideration for kitchen improvement -> Kitchen.Qual, Kitchen.AbvGr
+#variables consideration for basement improvement -> Bsmt.Fin.Type1, Bsmt.Unf.SF (unfinished basement area)
+#variables consideration for roof improvement -> Roof.Matl
+
+# Output:
+
+# Argument  | Description                                                                                                                                   | 
+#-----------|------------------------------------------------------------------  ---------------------------------------------------------------------------|
+# `matrix.df`  | a data frame containing recommend the renovation or not, current sales price, expected sales price after improvements, cost,  expected bump|
+
+#Implementation: We tested the expected bump in housing value based on testing data in 2010 by our selected model - LASSO
+
+#Client will input their desired result for all the parameters. If clients do not want to make a change, they will input "NA"
+
+Renovation_Calculator <- function(housing_parameter, bathroom, kitchen, basement, roof) {
+  
+  # bathroom cost
+  FULL_BATH_COST = 13000 # for both basement and above ground full bathroom
+  HALF_BATH_COST = 7000 # for both basement and above ground half bathroom
+  
+  # kitchen cost
+  KITCHEN_COST = 40000 
+  KITCHEN_UPGRADE_COST = 20000
+  
+  # basement cost
+  UNIT_BSMT_UPGRADE_COST = 800
+  UNIT_BSMT_FINISH_COST = 30
+  
+  # roof material cost
+  CLAYTILE_ROOF_COST = 20000
+  COMPSHG_ROOF_COST = 18000
+  MEMBRAN_ROOF_COST = 12000
+  METAL_ROOF_COST = 21000
+  ROLL_ROOF_COST = 5000
+  TARGRV_ROOF_COST = 6000
+  WDSHAKE_ROOF_COST = 14000
+  WDSHNGL_ROOF_COST = 16000
+  
+  bathroom_total_cost = 0
+  kitchen_total_cost = 0
+  base_total_cost = 0
+  roof_total_cost = 0
+
+  # Clients can input a number for bathroom[1] to indicate how many basement full bathrooms do they want (including the existing one(s)).
+    if(bathroom[1] != "NA") {
+      bathroom_total_cost = bathroom_total_cost + (  FULL_BATH_COST * (as.integer(bathroom[1]) - housing_parameter$Bsmt.Full.Bath) )
+      
+      housing_parameter$Bsmt.Full.Bath = as.integer(bathroom[1])
+    }
+  
+  # Clients can input a number for bathroom[2] to indicate how many basement half bathrooms do they want (including the existing one(s)).
+    if(bathroom[2] != "NA") {
+      bathroom_total_cost = bathroom_total_cost + (  HALF_BATH_COST * (as.integer(bathroom[2]) - housing_parameter$Bsmt.Half.Bath) )
+      housing_parameter$Bsmt.Half.Bath = as.integer(bathroom[2])
+    }
+  
+  # Clients can input a number for bathroom[3] to indicate how many full bathrooms do they want (including the existing one(s)).
+   if(bathroom[3] != "NA") {
+       bathroom_total_cost = bathroom_total_cost + (  FULL_BATH_COST* (as.integer(bathroom[3]) - housing_parameter$Full.Bath) )
+      housing_parameter$Full.Bath = as.integer(bathroom[3])
+   }
+  
+  # Clients can input a number for bathroom[4] to indicate how many half bathrooms do they want (including the existing one(s)).
+   if(bathroom[4] != "NA") {
+     bathroom_total_cost = bathroom_total_cost + (  HALF_BATH_COST* (as.integer(bathroom[4]) - housing_parameter$Half.Bath) )
+      housing_parameter$Half.Bath = as.integer(bathroom[4])
+   }
+  
+  # Clients can input a number for kitchen[1] to indicate whether they would like to remodel their kitchen(s) to upgrade into "Excellent" quality (assume upgrading leads to "Excellent" kitchen quality, and whatever quality they used to be, cost the same to upgrade into "Excellent")
+    if(kitchen[1] == "Yes") {
+      kitchen_total_cost = kitchen_total_cost + KITCHEN_UPGRADE_COST * (housing_parameter$Kitchen.AbvGr)
+      housing_parameter$Kitchen.Qual = as.character("Ex")
+    }
+  
+  # Clients can input a number for kitchen[2] to indicate how many kitchens do they want (including the existing one(s)).
+    if(kitchen[2] != "NA") {
+      kitchen_total_cost = kitchen_total_cost + (  KITCHEN_COST* (as.integer(kitchen[2]) - housing_parameter$Kitchen.AbvGr) )
+      housing_parameter$Kitchen.AbvGr = as.integer(kitchen[2])
+    }
+  
+  
+  # Clients can input a number for basement[1] to indicate whether they would like to remodel their basement to upgrade to "Good Living Quarters" (assume upgrading leads to "Good Living Quarters" basement quality, and whatever quality they used to be, cost the same to upgrade into "Good Living Quarters")
+   if(basement[1] == "Yes") {
+     base_total_cost = base_total_cost + UNIT_BSMT_UPGRADE_COST * (housing_parameter$BsmtFin.SF.1)
+     housing_parameter$Bsmt.Fin.Type1 = as.character("GLQ")
+   }
+ # Clients can input their desired square feet of unfinished basement. That is, the difference between the input and current number is the improvement.
+ # Bsmt.Unf.SF will be reduced by the differecne
+   if(basement[2] != "NA") {
+     basement_finish = housing_parameter$Bsmt.Unf.SF - as.integer(basement[2])
+     base_total_cost = base_total_cost + UNIT_BSMT_FINISH_COST * as.integer(basement_finish)
+     housing_parameter$Bsmt.Unf.SF = as.integer(basement[2])
+   }
+
+  
+  #changing roof preferences  
+  if(roof[1] == "ClyTile"){
+    housing_parameter$Roof.Matl = as.character(roof[1])
+    roof_total_cost = roof_total_cost + CLAYTILE_ROOF_COST
+  } else if(roof[1] == "CompShg") {
+    housing_parameter$Roof.Matl = as.character(roof[1])
+    roof_total_cost = roof_total_cost + COMPSHG_ROOF_COST
+  } else if(roof[1] == "Membran") {
+    housing_parameter$Roof.Matl = as.character(roof[1])
+    roof_total_cost = roof_total_cost + MEMBRAN_ROOF_COST
+  } else if(roof[1] == "Metal") {
+    housing_parameter$Roof.Matl = as.character(roof[1])
+    roof_total_cost = roof_total_cost + METAL_ROOF_COST
+  } else if(roof[1] == "Roll") {
+    housing_parameter$Roof.Matl = as.character(roof[1])
+    roof_total_cost = roof_total_cost + ROLL_ROOF_COST
+  } else if(roof[1] == "Tar&Grv"){
+    housing_parameter$Roof.Matl = as.character(roof[1])
+    roof_total_cost = roof_total_cost + TARGRV_ROOF_COST
+  } else if(roof[1] == "WdShake"){
+    housing_parameter$Roof.Matl = as.character(roof[1])
+    roof_total_cost = roof_total_cost + WDSHAKE_ROOF_COST
+  } else if(roof[1] == "WdShngl"){
+    housing_parameter$Roof.Matl = as.character(roof[1])
+    roof_total_cost = roof_total_cost + WDSHNGL_ROOF_COST
+  }
+  
+    total_cost = bathroom_total_cost+ kitchen_total_cost+ base_total_cost + roof_total_cost
+    # print(housing_parameter)
+    #new predicted value after renovation
+    # housing_x <- model.matrix(SalePrice ~.-log_SalePrice -Lot.Area,housing_parameter)[,-1]
+
+    new.pred <- predict(lasso.lm,housing_parameter)
+    #print("pred"+new.pred)
+   # print("1"+exp(new.pred[[1]]))
+    value = exp(new.pred[[1]])
+    expected_bump = value - housing_parameter$SalePrice 
+
+    
+  if(expected_bump - total_cost > 0){
+    recommendORnot = "Recommended!"
+  } else{
+    recommendORnot = "Not Recommended!"
+  }
+    
+  matrix.df <- data.frame(recommendORnot, housing_parameter$SalePrice, value, total_cost,expected_bump) 
+  names(matrix.df)[1] <- "Decision"
+  names(matrix.df)[2] <- "Current Price"
+  names(matrix.df)[3] <- "Expected Price after Improvement(s)"
+  names(matrix.df)[4] <- "Total Cost of Improvements"
+  names(matrix.df)[5] <- "Expected Bump"
+
+  return (matrix.df)  
+  
+}
+
+# Client will input their desired result for all the parameters. If clients do not want to make a change, they will input "NA".
+```
+
+
+#### Test the renovation calculator
+
+```{r}
+# Testing for the clients in 2010 data 
+testing_row1 <- validation_data[50,] # Assume this client want to make the following improvements.(Bathroom only) # current Bsmt.Full.Bath = 0 and Half.Bath = 0
+Renovation_Calculator(housing_parameter = testing_row1, bathroom = c(1,"NA","NA",2), kitchen = c("NA", "NA"), basement=c("NA", "NA"), roof=c("NA"))
+```
+
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+```{r}
+testing_row2 <- validation_data[86,] # Assume this client want to make the following improvements.(Bathroom only) # current Half.Bath = 1
+Renovation_Calculator(housing_parameter = testing_row2, bathroom = c("NA","NA","NA",2), kitchen = c("NA", "NA"), basement=c("NA", "NA"), roof=c("NA"))
+```
+
+Conclusion: Expected bump is higher than the costs, recommended for the client to improve. 
+
+
+```{r}
+testing_row3 <- validation_data[109,] # Assume this client want to make the following improvements. (Kitchen only) # current Kitchen.Qual is GD, Kitchen.AbvGr = 1
+Renovation_Calculator(housing_parameter = testing_row3, bathroom = c("NA","NA","NA","NA"), kitchen = c("Yes", 2), basement=c("NA", "NA"), roof=c("NA"))
+
+```
+
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+
+```{r}
+testing_row4 <- validation_data[186,] # Assume this client want to make the following improvements. (Kitchen only) # current Kitchen.Qual is TA.
+Renovation_Calculator(housing_parameter = testing_row4, bathroom = c("NA","NA","NA","NA"), kitchen = c("Yes", "NA"), basement=c("NA", "NA"), roof=c("NA"))
+```
+
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+
+```{r}
+testing_row5 <- validation_data[210,] # Assume this client want to make the following improvements. (basement only) # current Bsmt.Unf.SF is 780
+Renovation_Calculator(housing_parameter = testing_row5, bathroom = c("NA","NA","NA","NA"), kitchen = c("NA", "NA"), basement=c("NA", 200), roof=c("NA"))
+```
+
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+
+```{r}
+testing_row6 <- validation_data[320,] # Assume this client want to make the following improvements. (basement only) # current Bsmt.Unf.SF is 370
+Renovation_Calculator(housing_parameter = testing_row6, bathroom = c("NA","NA","NA","NA"), kitchen = c("NA", "NA"), basement=c("NA", 0), roof=c("NA"))
+```
+
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+```{r}
+testing_row7 <- validation_data[266,] # Assume this client want to make the following improvements. (roof only) # current roof.Matl = CompShg
+Renovation_Calculator(housing_parameter = testing_row7, bathroom = c("NA","NA","NA","NA"), kitchen = c("NA", "NA"), basement=c("NA", "NA"), roof=c("Roll"))
+```
+
+Conclusion: Expected bump is higher than the costs, recommended for the client to improve. 
+
+
+```{r}
+testing_row8 <- validation_data[301,] # Assume this client want to make the following improvements. (roof only) # current roof.Matl = CompShg
+Renovation_Calculator(housing_parameter = testing_row8, bathroom = c("NA","NA","NA","NA"), kitchen = c("NA", "NA"), basement=c("NA","NA"), roof=c("Metal"))
+```
+
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+
+
+#### We now considering more than 1 type of improvements 
+```{r}
+testing_row9 <- validation_data[50,] # Assume this client want to make the following improvements.(Bathroom only) # current Bsmt.Full.Bath = 0 and Half.Bath = 0, Bsmt.Unf.SF = 1346, roof.Matl = CompShg
+Renovation_Calculator(housing_parameter = testing_row9, bathroom = c(1,"NA","NA",2), kitchen = c("NA", "NA"), basement=c("NA", 800), roof=c("Roll"))
+```
+
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+
+
+```{r}
+testing_row10 <- validation_data[86,] # Assume this client want to make the following improvements.(Bathroom only) # current Half.Bath = 1, roof.Matl = CompShg
+Renovation_Calculator(housing_parameter = testing_row10, bathroom = c("NA","NA","NA",2), kitchen = c("NA", "NA"), basement=c("NA", 200), roof=c("Roll"))
+```
+
+Conclusion: Expected bump is higher than the costs, recommended for the client to improve. 
+
+
+```{r}
+testing_row11 <- validation_data[109,] # Assume this client want to make the following improvements. (Kitchen only) # current Kitchen.Qual is GD, Kitchen.AbvGr = 1, Bsmt.Half.Bath  = 0, Bsmt.Unf.SF = 143.
+Renovation_Calculator(housing_parameter = testing_row11, bathroom = c("NA", 1,"NA","NA"), kitchen = c("Yes", 2), basement=c("NA", 0), roof=c("NA"))
+```
+
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+
+```{r}
+testing_row12 <- validation_data[186,] # Assume this client want to make the following improvements. (Kitchen only) # current Kitchen.Qual is TA. #current roof.Matl = CompShg,Bsmt.Full.Bath = 1, Bsmt.Unf.SF = 777
+Renovation_Calculator(housing_parameter = testing_row12, bathroom = c(1 ,"NA","NA","NA"), kitchen = c("Yes", "NA"), basement=c("NA",  500), roof=c("WdShake"))
+```
+Conclusion: Expected bump is lower than the costs, NOT recommended for the client to improve. 
+
+
+Findings and limitations: We have performed 12 testing cases to find out if there are any specific cases that we should recommend the client(s) to make additional housing improvements. 3 out of 12 cases have expected bump in sales price greater than the estimated costs and therefore clients should make the improvement to gain higher profits. For instance, in testing case 2 client would like to add 1 more half bathroom above the ground. The cost is about $7,000  while the expected bump is $18044.35. Client will gain around $11,000 additional price increment. 
+
+For the testing case 7, client would like to change the roof material to "Roll", the cost is about $5,000 but the expected bump in sales value is $25332.47. Client should improve it to gain a higher selling profit.
+
+For the testing case 10, it is worth noting that this is the same client in testing case 2. However, this time the client would like to make more than 1 type of improvements including adding a half bath above ground, finishing basement and change the roof material to roll. The expected bump in this case is about $33322.96 while the cost is $17430. Client could gain around $16,000 profit. it is $5,000 more than only having one improvement shown in testing case 2. 
+
+Limitation of our calculator: There are two limitations affecting the accuracy of our calculator. The first one is that our model has an inherent and random prediction error that the predicted sales price is different from the true value. Taking testing case 5 as an example, the predicted sales price after improvement is lower than the real sales price before improvement. The second limitation is that the costs of the different housing improvements are estimated by national average cost. The true cost of housing improvement particular to the clients' house can vary because of the location, time and specific housing characteristics. Additionally, for the neighborhoods in high predicted errors as shown in problem 3, the prediciton might be even more unreliable. To make a better calculator, it would need more data and a true valuation of the improvement costs at that particular point in time. The results of above calculations should serve as a reference to our clients that in what situation the specific types of housing improvement might be a profitable investment. 
+
+
+### References
+
+The costs of adding/renovating bathroom/kitchen/basement/roof are estimated based on the statistics provided on the HomeAdvisor website: https://www.homeadvisor.com/cost/
+
